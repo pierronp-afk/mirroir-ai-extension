@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MirrorAI</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      width: 320px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+      color: white;
+    }
+    
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    
+    .header svg {
+      width: 32px;
+      height: 32px;
+    }
+    
+    .header h1 {
+      font-size: 20px;
+      font-weight: 700;
+    }
+    
+    .status {
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    
+    .status-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      opacity: 0.8;
+      margin-bottom: 8px;
+    }
+    
+    .status-value {
+      font-size: 24px;
+      font-weight: 700;
+    }
+    
+    .btn {
+      width: 100%;
+      padding: 14px;
+      background: white;
+      color: #2563eb;
+      border: none;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      margin-bottom: 8px;
+    }
+    
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+    
+    .btn-secondary {
+      background: transparent;
+      color: white;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+    }
+    
+    .btn-secondary:hover {
+      border-color: white;
+      background: rgba(255, 255, 255, 0.1);
+    }
+    
+    .footer {
+      margin-top: 16px;
+      text-align: center;
+      font-size: 11px;
+      opacity: 0.6;
+    }
+    
+    .footer a {
+      color: white;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+      <path d="M2 17l10 5 10-5"/>
+      <path d="M2 12l10 5 10-5"/>
+    </svg>
+    <h1>MirrorAI</h1>
+  </div>
+  
+  <div class="status">
+    <div class="status-title">Portfolio</div>
+    <div class="status-value" id="portfolioCount">-</div>
+  </div>
+  
+  <button class="btn" id="openFinance">
+    Ouvrir Google Finance
+  </button>
+  
+  <button class="btn btn-secondary" id="settings">
+    ⚙️ Paramètres
+  </button>
+  
+  <div class="footer">
+    <a href="#" id="help">Aide</a> · 
+    <a href="#" id="about">À propos</a>
+  </div>
+  
+  <script src="../scripts/popup.js"></script>
+</body>
+</html>
