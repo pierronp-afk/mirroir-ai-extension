@@ -1,41 +1,252 @@
-/**
- * MirrorAI Proxy — Vercel Serverless Function
- * Relaie les requêtes vers Gemini. La clé API reste côté serveur, jamais exposée.
- */
-export default async function handler(req, res) {
-  // CORS
-  res.setHeader('Access-Control-Allow-Origin', 'chrome-extension://*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-mirrorai-secret');
+/* ─── MirrorAI Inject Styles ─── */
 
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
-  // ✅ Vérification du secret — bloque toute requête non autorisée
-  const secret = req.headers['x-mirrorai-secret'];
-  if (!process.env.EXTENSION_SECRET || secret !== process.env.EXTENSION_SECRET) {
-    console.warn('⛔ Requête non autorisée');
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  if (!process.env.GEMINI_API_KEY) {
-    console.error('❌ GEMINI_API_KEY manquante dans les variables Vercel');
-    return res.status(500).json({ error: 'Server configuration error' });
-  }
-
-  try {
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
-
-    const response = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body),
-    });
-
-    const data = await response.json();
-    return res.status(response.status).json(data);
-  } catch (error) {
-    console.error('❌ Erreur proxy:', error);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
+/* Bouton principal */
+.mirrorai-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: white;
+  border: none;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  transition: all 0.2s ease;
+  white-space: nowrap;
 }
+.mirrorai-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(37,99,235,.35); }
+.mirrorai-btn-primary:disabled { opacity: .6; cursor: not-allowed; transform: none; }
+
+.mirrorai-btn-secondary {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px;
+  background: transparent;
+  color: #2563eb;
+  border: 1.5px solid #2563eb;
+  border-radius: 20px;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  transition: all .2s;
+}
+.mirrorai-btn-secondary:hover { background: #eff6ff; }
+
+.mirrorai-btn-icon {
+  background: none; border: none; cursor: pointer;
+  color: inherit; font-size: 16px; padding: 4px 8px;
+  opacity: .6; transition: opacity .15s;
+}
+.mirrorai-btn-icon:hover { opacity: 1; }
+
+/* ─── Spinner ─── */
+@keyframes mirrorai-spin { to { transform: rotate(360deg); } }
+.mirrorai-spinner { animation: mirrorai-spin .8s linear infinite; }
+
+/* ─── Sidebar ─── */
+.mirrorai-sidebar {
+  position: fixed;
+  top: 0; right: -420px;
+  width: 380px; height: 100vh;
+  background: #fff;
+  border-left: 1px solid #e2e8f0;
+  box-shadow: -4px 0 32px rgba(0,0,0,.1);
+  z-index: 999999;
+  display: flex; flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  transition: right .3s cubic-bezier(.4,0,.2,1);
+  overflow: hidden;
+}
+.mirrorai-sidebar.open { right: 0; }
+
+.mirrorai-sidebar-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: white;
+  font-weight: 700; font-size: 15px;
+  flex-shrink: 0;
+}
+.mirrorai-sidebar-title { display: flex; align-items: center; gap: 8px; }
+
+.mirrorai-sidebar-content {
+  flex: 1; overflow-y: auto; padding: 16px;
+}
+
+.mirrorai-sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid #f1f5f9;
+  flex-shrink: 0;
+}
+
+/* Récap portfolio */
+.mirrorai-recap {
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.mirrorai-recap-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 0;
+  font-size: 13px; color: #374151;
+}
+.mirrorai-recap-row strong { font-size: 14px; }
+
+/* Santé globale */
+.mirrorai-health {
+  background: linear-gradient(135deg, #eff6ff, #dbeafe);
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.mirrorai-health-badge {
+  display: inline-block;
+  background: #2563eb; color: white;
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 12px; font-weight: 700;
+  margin-bottom: 6px;
+}
+.mirrorai-health p { font-size: 13px; color: #1e40af; line-height: 1.5; margin: 0; }
+
+/* Cartes signaux */
+.mirrorai-signal-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 13px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  transition: box-shadow .2s;
+}
+.mirrorai-signal-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.07); }
+
+.mirrorai-signal-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 6px;
+}
+.mirrorai-signal-header strong { font-size: 14px; color: #111827; }
+
+.mirrorai-badge {
+  color: white; border-radius: 12px;
+  padding: 2px 9px; font-size: 11px; font-weight: 700;
+  white-space: nowrap; flex-shrink: 0;
+}
+
+.mirrorai-signal-meta {
+  font-size: 11px; color: #6b7280; margin-bottom: 6px;
+}
+
+.mirrorai-signal-reason {
+  color: #374151; line-height: 1.5; margin: 0 0 8px;
+}
+
+.mirrorai-signal-targets {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 6px; margin-bottom: 8px;
+}
+.mirrorai-signal-targets > div {
+  background: #f8fafc; border-radius: 6px; padding: 6px 8px;
+}
+.mirrorai-signal-targets label {
+  display: block; font-size: 10px; color: #9ca3af; margin-bottom: 2px;
+}
+.mirrorai-signal-targets span { font-size: 12px; font-weight: 600; color: #111827; }
+.mirrorai-signal-targets em { font-style: normal; color: #10b981; font-size: 11px; }
+
+.mirrorai-signal-action {
+  background: #f0fdf4; border-left: 3px solid #10b981;
+  padding: 6px 10px; border-radius: 0 6px 6px 0;
+  font-size: 12px; color: #065f46; font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.mirrorai-outlook {
+  font-size: 11px; color: #6b7280; padding-top: 4px;
+  border-top: 1px solid #f1f5f9; margin-top: 4px;
+}
+
+/* ─── Modals ─── */
+.mirrorai-modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.45);
+  z-index: 9999999;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.mirrorai-modal-content {
+  background: white;
+  border-radius: 16px;
+  padding: 24px;
+  width: 100%; max-width: 460px;
+  max-height: 80vh; overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,.2);
+}
+.mirrorai-modal-content h2 { margin: 0 0 4px; font-size: 18px; }
+.mirrorai-modal-subtitle { color: #6b7280; font-size: 13px; margin: 0 0 16px; }
+
+.mirrorai-pru-list { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+
+.mirrorai-pru-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px; background: #f8fafc; border-radius: 10px; gap: 12px;
+}
+.mirrorai-pru-stock { flex: 1; }
+.mirrorai-pru-stock strong { display: block; font-size: 14px; }
+.mirrorai-pru-price { font-size: 11px; color: #6b7280; }
+.mirrorai-pru-inputs { display: flex; gap: 8px; }
+.mirrorai-pru-inputs > div { display: flex; flex-direction: column; gap: 3px; }
+.mirrorai-pru-inputs label { font-size: 10px; color: #9ca3af; }
+.mirrorai-pru-inputs input {
+  width: 80px; padding: 6px 8px;
+  border: 1.5px solid #e2e8f0; border-radius: 8px;
+  font-size: 13px; outline: none;
+}
+.mirrorai-pru-inputs input:focus { border-color: #2563eb; }
+
+.mirrorai-modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* Chat */
+.mirrorai-chat-container {
+  background: white; border-radius: 16px;
+  width: 100%; max-width: 480px; height: 500px;
+  display: flex; flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,.2); overflow: hidden;
+}
+.mirrorai-chat-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white;
+}
+.mirrorai-chat-header h3 { margin: 0; font-size: 15px; }
+.mirrorai-chat-messages {
+  flex: 1; overflow-y: auto; padding: 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.mirrorai-chat-message {
+  max-width: 85%; padding: 9px 13px;
+  border-radius: 12px; font-size: 13px; line-height: 1.5;
+}
+.mirrorai-chat-message.user {
+  background: #2563eb; color: white; align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+.mirrorai-chat-message.assistant {
+  background: #f1f5f9; color: #111827; align-self: flex-start;
+  border-bottom-left-radius: 4px;
+}
+.mirrorai-chat-input {
+  display: flex; gap: 8px; padding: 12px;
+  border-top: 1px solid #f1f5f9;
+}
+.mirrorai-chat-input input {
+  flex: 1; padding: 9px 12px;
+  border: 1.5px solid #e2e8f0; border-radius: 20px;
+  font-size: 13px; outline: none;
+}
+.mirrorai-chat-input input:focus { border-color: #2563eb; }
