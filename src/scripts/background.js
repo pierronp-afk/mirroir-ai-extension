@@ -95,9 +95,6 @@ async function callGeminiViaProxy(prompt, retries = 3) {
       responseMimeType: 'application/json',
       temperature: 0.7,
     },
-    thinkingConfig: {
-      thinkingBudget: 1024,
-    },
   };
 
   for (let attempt = 0; attempt < retries; attempt++) {
