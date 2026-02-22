@@ -12,7 +12,7 @@
 
   "host_permissions": [
     "https://www.google.com/*",
-    "https://mirrorai-proxy.vercel.app/*"
+    "https://mirroir-ai-proxy.vercel.app/*"
   ],
 
   "background": {
