@@ -1,0 +1,41 @@
+/**
+ * MirrorAI Proxy — Vercel Serverless Function
+ * Relaie les requêtes vers Gemini. La clé API reste côté serveur, jamais exposée.
+ */
+export default async function handler(req, res) {
+  // CORS
+  res.setHeader('Access-Control-Allow-Origin', 'chrome-extension://*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-mirrorai-secret');
+
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  // ✅ Vérification du secret — bloque toute requête non autorisée
+  const secret = req.headers['x-mirrorai-secret'];
+  if (!process.env.EXTENSION_SECRET || secret !== process.env.EXTENSION_SECRET) {
+    console.warn('⛔ Requête non autorisée');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  if (!process.env.GEMINI_API_KEY) {
+    console.error('❌ GEMINI_API_KEY manquante dans les variables Vercel');
+    return res.status(500).json({ error: 'Server configuration error' });
+  }
+
+  try {
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+
+    const response = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+    });
+
+    const data = await response.json();
+    return res.status(response.status).json(data);
+  } catch (error) {
+    console.error('❌ Erreur proxy:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
