@@ -1,479 +1,492 @@
 /**
- * MirrorAI Content Script
- * Scrape Google Finance watchlist & inject analysis UI
+ * MirrorAI Content Script v3
+ * Compatible Google Finance : watchlist (/finance) ET portfolio (/finance/portfolio/...)
  */
 
-console.log('🎯 MirrorAI Extension loaded');
+console.log('🎯 MirrorAI v3 loaded — URL:', window.location.href);
 
-// Configuration
-const CONFIG = {
-  SELECTORS: {
-    // Google Finance DOM selectors (as of Feb 2026)
-    watchlistTable: 'tbody',
-    tableRows: 'tbody tr',
-    symbolCell: 'td:first-child a',
-    nameCell: 'td:nth-child(2)',
-    priceCell: 'td:nth-child(3)',
-    changeCell: 'td:nth-child(4)',
-    changePercentCell: 'td:nth-child(5)',
-    header: '.yDlTYb', // Watchlist header
-  },
-  INJECT_POINT: '.yDlTYb', // Where to inject analyze button
+// ─── Détection type de page ─────────────────────────────────────────────────
+const PAGE = {
+  isPortfolio: window.location.pathname.includes('/finance/portfolio'),
+  isWatchlist: !window.location.pathname.includes('/finance/portfolio'),
 };
 
-/**
- * Extract portfolio from Google Finance watchlist
- */
+// ─── Extraction des titres ──────────────────────────────────────────────────
 function extractPortfolio() {
   const portfolio = [];
-  const rows = document.querySelectorAll(CONFIG.SELECTORS.tableRows);
-  
-  rows.forEach((row, index) => {
-    try {
-      const symbolElement = row.querySelector(CONFIG.SELECTORS.symbolCell);
-      const nameElement = row.querySelector(CONFIG.SELECTORS.nameCell);
-      const priceElement = row.querySelector(CONFIG.SELECTORS.priceCell);
-      const changeElement = row.querySelector(CONFIG.SELECTORS.changeCell);
-      const changePercentElement = row.querySelector(CONFIG.SELECTORS.changePercentCell);
-      
-      if (!symbolElement || !priceElement) return;
-      
-      const symbol = symbolElement.textContent.trim();
-      const name = nameElement?.textContent.trim() || symbol;
-      const priceText = priceElement.textContent.trim();
-      const changeText = changeElement?.textContent.trim() || '0';
-      const changePercentText = changePercentElement?.textContent.trim() || '0%';
-      
-      // Parse price (format: "$123.45" or "123,45 €")
-      const price = parseFloat(priceText.replace(/[^0-9.,]/g, '').replace(',', '.'));
-      
-      // Parse change (format: "+1.23" or "-1.23")
-      const change = parseFloat(changeText.replace(/[^0-9.,-]/g, '').replace(',', '.'));
-      
-      // Parse change percent (format: "+1.23%" or "-1.23%")
-      const changePercent = parseFloat(changePercentText.replace(/[^0-9.,-]/g, '').replace(',', '.'));
-      
-      if (!isNaN(price) && symbol) {
-        portfolio.push({
-          symbol,
-          name,
-          price,
-          change,
-          changePercent,
-          shares: 0, // Will be asked to user
-          avgPrice: 0, // Will be asked to user
-        });
+  const seen = new Set();
+
+  // Stratégie A : liens vers des pages de cotation individuelle
+  // Sur Google Finance, chaque titre est un lien de la forme /finance/quote/AAPL:NASDAQ
+  document.querySelectorAll('a[href*="/finance/quote/"]').forEach(link => {
+    const href = link.getAttribute('href') || '';
+    // Extrait le symbole depuis l'URL /finance/quote/SYMBOL:EXCHANGE
+    const match = href.match(/\/finance\/quote\/([^:/?]+)/);
+    if (!match) return;
+
+    const symbol = match[1].trim();
+    if (!symbol || seen.has(symbol)) return;
+    seen.add(symbol);
+
+    // Nom affiché dans le lien ou attribut aria-label
+    const name = link.getAttribute('aria-label') || link.textContent.trim() || symbol;
+
+    // Cherche un prix dans les éléments voisins
+    const parent = link.closest('tr') || link.closest('[data-row]') || link.parentElement?.parentElement;
+    let price = 0;
+    if (parent) {
+      const texts = parent.innerText.split(/\s+/);
+      for (const t of texts) {
+        const n = parseFloat(t.replace(',', '.').replace(/[^0-9.]/g, ''));
+        if (n > 0.5 && n < 100000) { price = n; break; }
       }
-    } catch (err) {
-      console.error(`Error parsing row ${index}:`, err);
     }
+
+    portfolio.push({ symbol, name: name.split('\n')[0].trim(), price: price || 1, change: 0, changePercent: 0, shares: 0, avgPrice: 0 });
   });
-  
-  console.log('📊 Portfolio extracted:', portfolio);
+
+  // Stratégie B : lignes de tableau (watchlist classique)
+  if (portfolio.length === 0) {
+    document.querySelectorAll('tbody tr').forEach(row => {
+      const cells = Array.from(row.querySelectorAll('td'));
+      if (cells.length < 2) return;
+
+      const symbolEl = cells[0].querySelector('a') || cells[0];
+      const symbol = symbolEl.textContent.trim().split('\n')[0].trim();
+      if (!symbol || symbol.length > 12 || seen.has(symbol) || /^\d/.test(symbol)) return;
+      seen.add(symbol);
+
+      const priceText = cells[2]?.textContent || cells[1]?.textContent || '';
+      const price = parseFloat(priceText.replace(/[^0-9.,]/g, '').replace(',', '.')) || 1;
+
+      portfolio.push({ symbol, name: symbol, price, change: 0, changePercent: 0, shares: 0, avgPrice: 0 });
+    });
+  }
+
+  // Stratégie C : data-symbol (attribut natif Google Finance)
+  if (portfolio.length === 0) {
+    document.querySelectorAll('[data-symbol]').forEach(el => {
+      const symbol = el.getAttribute('data-symbol');
+      if (!symbol || seen.has(symbol)) return;
+      seen.add(symbol);
+      portfolio.push({ symbol, name: symbol, price: 1, change: 0, changePercent: 0, shares: 0, avgPrice: 0 });
+    });
+  }
+
+  console.log(`📊 MirrorAI — ${portfolio.length} titre(s) trouvé(s):`, portfolio.map(p => p.symbol).join(', '));
   return portfolio;
 }
 
-/**
- * Inject "Analyze with MirrorAI" button
- */
+// ─── Point d'injection du bouton ───────────────────────────────────────────
+function findInjectPoint() {
+  // Sélecteurs par ordre de priorité selon le type de page
+  const selectors = PAGE.isPortfolio
+    ? [
+        // Pages portfolio
+        '.Jv0Q5b',          // container nom portfolio
+        '.NKnt9e',          // header portfolio
+        '[data-target-id]', // section avec id cible
+        '.jKMTzb',          // zone titre
+        '.bM0Bbd',          // block holdings
+        'h1',               // fallback h1
+      ]
+    : [
+        // Pages watchlist
+        '.yDlTYb',
+        '.e6hBKb',
+        'h1',
+      ];
+
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      console.log('✅ MirrorAI — inject point:', sel);
+      return el;
+    }
+  }
+
+  // Dernier recours : après le premier h1 ou h2 visible
+  const headings = document.querySelectorAll('h1, h2');
+  for (const h of headings) {
+    if (h.textContent.trim().length > 0) {
+      console.log('✅ MirrorAI — inject point: heading fallback');
+      return h;
+    }
+  }
+
+  return null;
+}
+
+// ─── Injection du bouton ────────────────────────────────────────────────────
+let injecting = false;
+let injectAttempts = 0;
+
 function injectAnalyzeButton() {
-  const header = document.querySelector(CONFIG.SELECTORS.INJECT_POINT);
-  if (!header) {
-    console.warn('⚠️ Header not found, retrying...');
-    setTimeout(injectAnalyzeButton, 1000);
+  if (document.getElementById('mirrorai-btn-wrap')) return;
+  if (injecting) return;
+  if (injectAttempts > 20) {
+    // Après 20 tentatives (~40s), on injecte un bouton flottant en fallback
+    injectFloatingButton();
     return;
   }
-  
-  // Check if button already exists
-  if (document.getElementById('mirrorai-analyze-btn')) {
+
+  injecting = true;
+  injectAttempts++;
+
+  const target = findInjectPoint();
+  if (!target) {
+    console.log(`⏳ MirrorAI — tentative ${injectAttempts}/20, réessai dans 2s`);
+    injecting = false;
+    setTimeout(injectAnalyzeButton, 2000);
     return;
   }
-  
-  const button = document.createElement('button');
-  button.id = 'mirrorai-analyze-btn';
-  button.className = 'mirrorai-btn-primary';
-  button.innerHTML = `
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+
+  const wrap = document.createElement('div');
+  wrap.id = 'mirrorai-btn-wrap';
+  wrap.style.cssText = 'margin:10px 0 6px 0; display:inline-flex; align-items:center; gap:8px;';
+
+  const btn = document.createElement('button');
+  btn.id = 'mirrorai-analyze-btn';
+  btn.className = 'mirrorai-btn-primary';
+  btn.innerHTML = `
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
       <path d="M12 2L2 7l10 5 10-5-10-5z"/>
       <path d="M2 17l10 5 10-5"/>
       <path d="M2 12l10 5 10-5"/>
     </svg>
-    <span>Analyser avec MirrorAI</span>
+    Analyser avec MirrorAI
   `;
-  
-  button.addEventListener('click', handleAnalyzeClick);
-  
-  // Insert button
-  const container = document.createElement('div');
-  container.className = 'mirrorai-button-container';
-  container.appendChild(button);
-  
-  header.appendChild(container);
-  
-  console.log('✅ Analyze button injected');
+  btn.addEventListener('click', handleAnalyzeClick);
+  wrap.appendChild(btn);
+
+  // Insère après le target
+  if (target.parentNode) {
+    target.parentNode.insertBefore(wrap, target.nextSibling);
+  } else {
+    target.appendChild(wrap);
+  }
+
+  console.log('✅ MirrorAI — bouton injecté');
+  injecting = false;
 }
 
-/**
- * Handle analyze button click
- */
-async function handleAnalyzeClick() {
-  const button = document.getElementById('mirrorai-analyze-btn');
-  if (!button) return;
-  
-  // Disable button + loading state
-  button.disabled = true;
-  button.innerHTML = `
-    <svg class="mirrorai-spinner" width="16" height="16" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity="0.25"/>
-      <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/>
+// Bouton flottant si aucun sélecteur ne fonctionne
+function injectFloatingButton() {
+  if (document.getElementById('mirrorai-btn-wrap')) return;
+  const wrap = document.createElement('div');
+  wrap.id = 'mirrorai-btn-wrap';
+  wrap.style.cssText = 'position:fixed; bottom:24px; right:24px; z-index:99999;';
+
+  const btn = document.createElement('button');
+  btn.id = 'mirrorai-analyze-btn';
+  btn.className = 'mirrorai-btn-primary';
+  btn.style.cssText = 'box-shadow: 0 4px 20px rgba(37,99,235,0.4);';
+  btn.innerHTML = `
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+      <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+      <path d="M2 17l10 5 10-5"/>
+      <path d="M2 12l10 5 10-5"/>
     </svg>
-    <span>Analyse en cours...</span>
+    Analyser avec MirrorAI
   `;
-  
+  btn.addEventListener('click', handleAnalyzeClick);
+  wrap.appendChild(btn);
+  document.body.appendChild(wrap);
+  console.log('✅ MirrorAI — bouton flottant injecté (fallback)');
+}
+
+// ─── Handler clic Analyser ──────────────────────────────────────────────────
+async function handleAnalyzeClick() {
+  const btn = document.getElementById('mirrorai-analyze-btn');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  setButtonLoading(btn, true);
+
   try {
-    // 1. Extract portfolio
     const portfolio = extractPortfolio();
-    
     if (portfolio.length === 0) {
-      alert('❌ Aucun titre détecté dans votre watchlist Google Finance.');
-      resetButton(button);
+      alert('❌ Aucun titre détecté sur cette page.\n\nAssure-toi d\'être sur une page Google Finance qui affiche tes titres.');
+      setButtonLoading(btn, false);
       return;
     }
-    
-    // 2. Check if PRU (Prix de Revient Unitaire) is stored
-    const storedPortfolio = await chrome.storage.local.get('portfolio');
-    let enrichedPortfolio = portfolio;
-    
-    if (!storedPortfolio.portfolio) {
-      // First time: ask for PRU and shares
-      enrichedPortfolio = await askForPRU(portfolio);
-      await chrome.storage.local.set({ portfolio: enrichedPortfolio });
-    } else {
-      // Merge with stored data
-      enrichedPortfolio = portfolio.map(stock => {
-        const stored = storedPortfolio.portfolio.find(s => s.symbol === stock.symbol);
-        return stored ? { ...stock, shares: stored.shares, avgPrice: stored.avgPrice } : stock;
+
+    // Récupère les données mémorisées (quantités / PRU)
+    const stored = await chrome.storage.local.get('portfolio');
+    let enriched;
+
+    if (stored.portfolio?.length > 0) {
+      // Fusionne prix actuels + données mémorisées
+      enriched = portfolio.map(stock => {
+        const mem = stored.portfolio.find(s => s.symbol === stock.symbol);
+        return mem
+          ? { ...stock, shares: mem.shares, avgPrice: mem.avgPrice }
+          : { ...stock, shares: 0, avgPrice: stock.price };
       });
-    }
-    
-    // 3. Send to background for AI analysis
-    chrome.runtime.sendMessage(
-      {
-        action: 'analyze',
-        portfolio: enrichedPortfolio,
-      },
-      (response) => {
-        if (response.error) {
-          alert(`❌ Erreur: ${response.error}`);
-          resetButton(button);
-          return;
-        }
-        
-        // 4. Open sidebar with analysis
-        openSidebar(response.analysis);
-        resetButton(button);
+
+      // Vérifie si de nouveaux titres ont été ajoutés
+      const newSymbols = portfolio.filter(s => !stored.portfolio.find(m => m.symbol === s.symbol));
+      if (newSymbols.length > 0) {
+        const extra = await askForPRU(newSymbols, `Nouveaux titres détectés (${newSymbols.map(s => s.symbol).join(', ')})`);
+        enriched = [...enriched.filter(s => !extra.find(e => e.symbol === s.symbol)), ...extra];
       }
-    );
+    } else {
+      enriched = await askForPRU(portfolio, 'Configure ton portfolio');
+    }
+
+    await chrome.storage.local.set({ portfolio: enriched });
+
+    // Appel analyse
+    chrome.runtime.sendMessage({ action: 'analyze', portfolio: enriched }, response => {
+      if (chrome.runtime.lastError) {
+        alert(`❌ ${chrome.runtime.lastError.message}`);
+      } else if (response?.error) {
+        alert(`❌ Erreur proxy: ${response.error}\n\nVérifie que ton proxy Vercel est bien déployé.`);
+      } else {
+        openSidebar(response.analysis, enriched);
+      }
+      setButtonLoading(btn, false);
+    });
+
   } catch (err) {
-    console.error('Analysis error:', err);
-    alert(`❌ Erreur: ${err.message}`);
-    resetButton(button);
+    if (err.message !== 'cancelled') alert(`❌ ${err.message}`);
+    setButtonLoading(btn, false);
   }
 }
 
-/**
- * Reset button to initial state
- */
-function resetButton(button) {
-  button.disabled = false;
-  button.innerHTML = `
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-      <path d="M2 17l10 5 10-5"/>
-      <path d="M2 12l10 5 10-5"/>
-    </svg>
-    <span>Analyser avec MirrorAI</span>
-  `;
+function setButtonLoading(btn, loading) {
+  btn.disabled = loading;
+  btn.innerHTML = loading
+    ? `<svg class="mirrorai-spinner" width="15" height="15" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/></svg> Analyse en cours...`
+    : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> Analyser avec MirrorAI`;
 }
 
-/**
- * Ask user for PRU (Prix de Revient Unitaire) and shares
- */
-async function askForPRU(portfolio) {
-  // Create modal
-  const modal = document.createElement('div');
-  modal.id = 'mirrorai-pru-modal';
-  modal.innerHTML = `
-    <div class="mirrorai-modal-overlay">
+// ─── Modal saisie PRU ───────────────────────────────────────────────────────
+function askForPRU(portfolio, title = 'Ton portfolio') {
+  return new Promise((resolve, reject) => {
+    const modal = document.createElement('div');
+    modal.className = 'mirrorai-modal-overlay';
+    modal.innerHTML = `
       <div class="mirrorai-modal-content">
-        <h2>📝 Configuration de votre portfolio</h2>
-        <p class="mirrorai-modal-subtitle">
-          Entrez vos prix d'achat (PRU) et quantités pour une analyse personnalisée
-        </p>
-        <form id="mirrorai-pru-form">
-          ${portfolio.map(stock => `
+        <h2>📝 ${title}</h2>
+        <p class="mirrorai-modal-subtitle">Saisis tes quantités et prix d'achat moyens (PRU)</p>
+        <div class="mirrorai-pru-list">
+          ${portfolio.map(s => `
             <div class="mirrorai-pru-row">
               <div class="mirrorai-pru-stock">
-                <strong>${stock.symbol}</strong>
-                <span>${stock.name}</span>
+                <strong>${s.symbol}</strong>
+                <span class="mirrorai-pru-price">Cours actuel : ${s.price > 1 ? s.price.toFixed(2) + ' €' : 'N/A'}</span>
               </div>
               <div class="mirrorai-pru-inputs">
-                <input 
-                  type="number" 
-                  name="shares_${stock.symbol}" 
-                  placeholder="Quantité"
-                  step="1"
-                  min="0"
-                  required
-                />
-                <input 
-                  type="number" 
-                  name="avgPrice_${stock.symbol}" 
-                  placeholder="PRU (€)"
-                  step="0.01"
-                  min="0"
-                  value="${stock.price}"
-                  required
-                />
+                <div>
+                  <label>Quantité</label>
+                  <input type="number" id="pru_shares_${s.symbol}" value="1" min="0" step="1" placeholder="ex: 10"/>
+                </div>
+                <div>
+                  <label>PRU (€)</label>
+                  <input type="number" id="pru_avg_${s.symbol}" value="${s.price > 1 ? s.price.toFixed(2) : ''}" min="0" step="0.01" placeholder="ex: 145.50"/>
+                </div>
               </div>
             </div>
           `).join('')}
-          <div class="mirrorai-modal-actions">
-            <button type="button" id="mirrorai-pru-cancel" class="mirrorai-btn-secondary">
-              Annuler
-            </button>
-            <button type="submit" class="mirrorai-btn-primary">
-              Valider
-            </button>
-          </div>
-        </form>
+        </div>
+        <div class="mirrorai-modal-actions">
+          <button id="pru-cancel" class="mirrorai-btn-secondary">Annuler</button>
+          <button id="pru-submit" class="mirrorai-btn-primary">Lancer l'analyse →</button>
+        </div>
       </div>
-    </div>
-  `;
-  
-  document.body.appendChild(modal);
-  
-  // Handle form submission
-  return new Promise((resolve, reject) => {
-    const form = document.getElementById('mirrorai-pru-form');
-    const cancelBtn = document.getElementById('mirrorai-pru-cancel');
-    
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const formData = new FormData(form);
-      
-      const enriched = portfolio.map(stock => ({
-        ...stock,
-        shares: parseFloat(formData.get(`shares_${stock.symbol}`)) || 0,
-        avgPrice: parseFloat(formData.get(`avgPrice_${stock.symbol}`)) || stock.price,
+    `;
+    document.body.appendChild(modal);
+
+    document.getElementById('pru-submit').addEventListener('click', () => {
+      const enriched = portfolio.map(s => ({
+        ...s,
+        shares: parseFloat(document.getElementById(`pru_shares_${s.symbol}`)?.value) || 1,
+        avgPrice: parseFloat(document.getElementById(`pru_avg_${s.symbol}`)?.value) || s.price,
       }));
-      
       modal.remove();
       resolve(enriched);
     });
-    
-    cancelBtn.addEventListener('click', () => {
+    document.getElementById('pru-cancel').addEventListener('click', () => {
       modal.remove();
-      reject(new Error('User cancelled'));
+      reject(new Error('cancelled'));
     });
+    modal.addEventListener('click', e => { if (e.target === modal) { modal.remove(); reject(new Error('cancelled')); } });
   });
 }
 
-/**
- * Open sidebar with analysis results
- */
-function openSidebar(analysis) {
-  // Check if sidebar already exists
-  let sidebar = document.getElementById('mirrorai-sidebar');
-  
-  if (!sidebar) {
-    sidebar = document.createElement('div');
-    sidebar.id = 'mirrorai-sidebar';
-    sidebar.className = 'mirrorai-sidebar';
-    document.body.appendChild(sidebar);
-  }
-  
+// ─── Sidebar résultats ──────────────────────────────────────────────────────
+const ADVICE_COLORS = { Acheter: '#10b981', Renforcer: '#3b82f6', Conserver: '#64748b', Alléger: '#f59e0b', Vendre: '#ef4444' };
+const URGENCY_ICONS = { HAUTE: '🔴', 'MODÉRÉE': '🟡', FAIBLE: '🟢' };
+
+function openSidebar(analysis, portfolio) {
+  document.getElementById('mirrorai-sidebar')?.remove();
+
+  const totalVal = portfolio.reduce((s, p) => s + (p.price * p.shares), 0);
+  const totalGain = portfolio.reduce((s, p) => s + ((p.price - p.avgPrice) * p.shares), 0);
+
+  const sidebar = document.createElement('div');
+  sidebar.id = 'mirrorai-sidebar';
+  sidebar.className = 'mirrorai-sidebar';
   sidebar.innerHTML = `
     <div class="mirrorai-sidebar-header">
       <div class="mirrorai-sidebar-title">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
           <path d="M12 2L2 7l10 5 10-5-10-5z"/>
           <path d="M2 17l10 5 10-5"/>
           <path d="M2 12l10 5 10-5"/>
         </svg>
-        <h3>MirrorAI</h3>
+        MirrorAI
       </div>
-      <button id="mirrorai-sidebar-close" class="mirrorai-btn-icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="18" y1="6" x2="6" y2="18"/>
-          <line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
+      <button id="mirrorai-close" class="mirrorai-btn-icon" title="Fermer">✕</button>
     </div>
-    
+
     <div class="mirrorai-sidebar-content">
-      <div class="mirrorai-analysis">
-        <h4>📊 Analyse Globale</h4>
-        <div class="mirrorai-health">
-          <span class="mirrorai-health-badge">${analysis.health || 'En cours...'}</span>
-          <p>${analysis.healthDesc || ''}</p>
+
+      <!-- Récap portfolio -->
+      <div class="mirrorai-recap">
+        <div class="mirrorai-recap-row">
+          <span>Valeur totale</span>
+          <strong>${totalVal > 0 ? totalVal.toFixed(2) + ' €' : '—'}</strong>
         </div>
-        
-        <h4>🎯 Signaux par Titre</h4>
-        <div class="mirrorai-signals">
-          ${(analysis.signals || []).map(signal => `
-            <div class="mirrorai-signal-card ${signal.color || 'blue'}">
-              <div class="mirrorai-signal-header">
-                <strong>${signal.name || signal.symbol}</strong>
-                <span class="mirrorai-signal-badge">${signal.advice || 'HOLD'}</span>
-              </div>
-              <p class="mirrorai-signal-reason">${signal.simpleReasoning || signal.reason || ''}</p>
-              <div class="mirrorai-signal-action">
-                <strong>Action:</strong> ${signal.action || 'Conserver'}
-              </div>
-            </div>
-          `).join('')}
+        <div class="mirrorai-recap-row">
+          <span>Gain total</span>
+          <strong style="color:${totalGain >= 0 ? '#10b981' : '#ef4444'}">${totalGain >= 0 ? '+' : ''}${totalGain.toFixed(2)} €</strong>
+        </div>
+        <div class="mirrorai-recap-row">
+          <span>Titres analysés</span>
+          <strong>${portfolio.length}</strong>
         </div>
       </div>
+
+      <!-- Santé globale -->
+      <div class="mirrorai-health">
+        <span class="mirrorai-health-badge">${analysis.health || '—'}</span>
+        <p>${analysis.healthDesc || ''}</p>
+      </div>
+
+      <!-- Signaux par titre -->
+      <h4 style="margin:16px 0 8px; font-size:13px; text-transform:uppercase; letter-spacing:.5px; opacity:.6;">Signaux par titre</h4>
+      ${(analysis.signals || []).map(s => {
+        const port = portfolio.find(p => p.symbol === s.symbol) || {};
+        const gainTitre = port.shares > 0 ? ((s.targetPrice - port.avgPrice) / port.avgPrice * 100).toFixed(1) : null;
+        return `
+        <div class="mirrorai-signal-card">
+          <div class="mirrorai-signal-header">
+            <div>
+              <strong>${s.name || s.symbol}</strong>
+              <span style="font-size:11px; opacity:.6; margin-left:6px;">${s.symbol}</span>
+            </div>
+            <span class="mirrorai-badge" style="background:${ADVICE_COLORS[s.advice] || '#64748b'}">${s.advice}</span>
+          </div>
+
+          <div class="mirrorai-signal-meta">
+            ${URGENCY_ICONS[s.urgency] || ''} Urgence ${s.urgency || '—'}
+            &nbsp;·&nbsp; Conviction ${s.confidence}/100
+          </div>
+
+          <p class="mirrorai-signal-reason">${s.simpleReasoning || ''}</p>
+
+          <div class="mirrorai-signal-targets">
+            <div><label>🎯 Objectif</label><span>${s.targetPrice ? s.targetPrice.toFixed(2) + ' €' : '—'}${gainTitre ? ` <em>(+${gainTitre}%)</em>` : ''}</span></div>
+            <div><label>🛑 Stop-loss</label><span>${s.stopLoss ? s.stopLoss.toFixed(2) + ' €' : '—'}</span></div>
+          </div>
+
+          <div class="mirrorai-signal-action">👉 ${s.action || ''}</div>
+
+          ${s.threeMonthOutlook ? `<div class="mirrorai-outlook">📅 3 mois : ${s.threeMonthOutlook}</div>` : ''}
+        </div>
+      `}).join('')}
     </div>
-    
+
     <div class="mirrorai-sidebar-footer">
-      <button id="mirrorai-chat-open" class="mirrorai-btn-secondary">
-        💬 Poser une question
-      </button>
+      <button id="mirrorai-chat-btn" class="mirrorai-btn-secondary" style="width:100%">💬 Poser une question à l'IA</button>
     </div>
   `;
-  
-  // Add open class for animation
-  setTimeout(() => sidebar.classList.add('open'), 10);
-  
-  // Handle close button
-  document.getElementById('mirrorai-sidebar-close').addEventListener('click', () => {
+
+  document.body.appendChild(sidebar);
+  requestAnimationFrame(() => sidebar.classList.add('open'));
+
+  document.getElementById('mirrorai-close').addEventListener('click', () => {
     sidebar.classList.remove('open');
     setTimeout(() => sidebar.remove(), 300);
   });
-  
-  // Handle chat button
-  document.getElementById('mirrorai-chat-open').addEventListener('click', openChatModal);
+  document.getElementById('mirrorai-chat-btn').addEventListener('click', () => openChatModal(analysis));
 }
 
-/**
- * Open chat modal
- */
-function openChatModal() {
+// ─── Chat ───────────────────────────────────────────────────────────────────
+function openChatModal(analysis) {
+  document.getElementById('mirrorai-chat-modal')?.remove();
   const modal = document.createElement('div');
   modal.id = 'mirrorai-chat-modal';
+  modal.className = 'mirrorai-modal-overlay';
   modal.innerHTML = `
-    <div class="mirrorai-modal-overlay">
-      <div class="mirrorai-chat-container">
-        <div class="mirrorai-chat-header">
-          <h3>💬 Posez votre question</h3>
-          <button id="mirrorai-chat-close" class="mirrorai-btn-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/>
-              <line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
-        <div class="mirrorai-chat-messages" id="mirrorai-chat-messages"></div>
-        <form id="mirrorai-chat-form" class="mirrorai-chat-input">
-          <input 
-            type="text" 
-            id="mirrorai-chat-input" 
-            placeholder="Ex: Dois-je renforcer Apple maintenant ?"
-            required
-          />
-          <button type="submit" class="mirrorai-btn-primary">
-            Envoyer
-          </button>
-        </form>
+    <div class="mirrorai-chat-container">
+      <div class="mirrorai-chat-header">
+        <h3>💬 Question à MirrorAI</h3>
+        <button id="chat-close" class="mirrorai-btn-icon">✕</button>
+      </div>
+      <div class="mirrorai-chat-messages" id="chat-messages">
+        <div class="mirrorai-chat-message assistant">Bonjour ! Pose-moi n'importe quelle question sur ton portfolio ou les marchés.</div>
+      </div>
+      <div class="mirrorai-chat-input">
+        <input id="chat-input" type="text" placeholder="Ex: Dois-je renforcer ma position ?"/>
+        <button id="chat-send" class="mirrorai-btn-primary">Envoyer</button>
       </div>
     </div>
   `;
-  
   document.body.appendChild(modal);
-  
-  // Handle close
-  document.getElementById('mirrorai-chat-close').addEventListener('click', () => {
-    modal.remove();
-  });
-  
-  // Handle form submission
-  const form = document.getElementById('mirrorai-chat-form');
-  const input = document.getElementById('mirrorai-chat-input');
-  const messagesDiv = document.getElementById('mirrorai-chat-messages');
-  
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const question = input.value.trim();
-    if (!question) return;
-    
-    // Add user message
-    addChatMessage(messagesDiv, question, 'user');
+
+  const send = () => {
+    const input = document.getElementById('chat-input');
+    const q = input.value.trim();
+    if (!q) return;
+    const msgs = document.getElementById('chat-messages');
+    addMsg(msgs, q, 'user');
     input.value = '';
     input.disabled = true;
-    
-    // Add loading message
-    const loadingId = Date.now();
-    addChatMessage(messagesDiv, 'Analyse en cours...', 'assistant', loadingId);
-    
-    // Send to background
-    chrome.runtime.sendMessage(
-      { action: 'ask', question },
-      (response) => {
-        // Remove loading message
-        document.getElementById(`msg-${loadingId}`)?.remove();
-        
-        if (response.error) {
-          addChatMessage(messagesDiv, `Erreur: ${response.error}`, 'error');
-        } else {
-          addChatMessage(messagesDiv, response.answer, 'assistant');
-        }
-        
-        input.disabled = false;
-        input.focus();
-      }
-    );
-  });
+
+    const lid = Date.now();
+    addMsg(msgs, '⏳ Analyse...', 'assistant', lid);
+
+    chrome.runtime.sendMessage({ action: 'ask', question: q }, res => {
+      document.getElementById(`msg-${lid}`)?.remove();
+      addMsg(msgs, res?.answer || `Erreur : ${res?.error}`, 'assistant');
+      input.disabled = false;
+      input.focus();
+    });
+  };
+
+  document.getElementById('chat-send').addEventListener('click', send);
+  document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+  document.getElementById('chat-close').addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 }
 
-/**
- * Add message to chat
- */
-function addChatMessage(container, text, type, id) {
-  const msg = document.createElement('div');
-  msg.className = `mirrorai-chat-message ${type}`;
-  if (id) msg.id = `msg-${id}`;
-  msg.textContent = text;
-  container.appendChild(msg);
+function addMsg(container, text, type, id) {
+  const el = document.createElement('div');
+  el.className = `mirrorai-chat-message ${type}`;
+  if (id) el.id = `msg-${id}`;
+  el.textContent = text;
+  container.appendChild(el);
   container.scrollTop = container.scrollHeight;
 }
 
-/**
- * Initialize extension
- */
+// ─── Init + Observer ────────────────────────────────────────────────────────
 function init() {
-  // Wait for page load
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-    return;
-  }
-  
-  // Inject button after a delay (ensure DOM is ready)
-  setTimeout(injectAnalyzeButton, 1000);
-  
-  // Listen for dynamic page changes (SPA navigation)
+  setTimeout(injectAnalyzeButton, 1500);
+
+  // Observer avec throttle pour ne pas spammer
+  let observerTimeout = null;
   const observer = new MutationObserver(() => {
-    if (!document.getElementById('mirrorai-analyze-btn')) {
-      injectAnalyzeButton();
-    }
+    if (document.getElementById('mirrorai-btn-wrap')) return;
+    clearTimeout(observerTimeout);
+    observerTimeout = setTimeout(injectAnalyzeButton, 1500);
   });
-  
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-  });
+  observer.observe(document.body, { childList: true, subtree: false }); // subtree:false = moins de bruit
 }
 
-// Start
-init();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
